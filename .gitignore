@@ -1,0 +1,6 @@
+logs/
+venv/
+__pycache__/
+rateMyCode_history.db
+*.class
+.DS_Store
