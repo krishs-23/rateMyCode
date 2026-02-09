@@ -1,6 +1,7 @@
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.net.URISyntaxException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -29,11 +30,13 @@ public class RateMyCode {
     private static boolean voiceEnabled; // Toggle for Text-to-Speech
     private static int maxComplexity; // Threshold for loop nesting depth
     private static String pythonPath; // Path to the Python executable (in venv)
+    private static String geminiApiKey; // Google Gemini API Key
 
     // --- Constants ---
+    private static String installDir; // Path where the JAR/Class is located
     private static final String ENGINE_PATH = "engine/analyzer.py"; // Relative path to Python logic
-    private static final String DOCS_DIR = "docs/"; // Directory to watch
     private static final String LOGS_DIR = "logs/"; // Directory for system logs
+    private static String targetDir; // Directory to watch (from CLI arg)
 
     /**
      * Main System Loop
@@ -42,13 +45,23 @@ public class RateMyCode {
     public static void main(String[] args) {
         System.out.println("RateMyCode: Starting...");
 
-        // 1. Load User Configuration
+        // 0. Resolve Paths
+        resolveInstallationPath();
+
+        // 1. Argument Parsing (Target Directory)
+        if (args.length > 0) {
+            targetDir = args[0];
+        } else {
+            targetDir = "."; // Default to current directory
+        }
+
+        // 2. Load User Configuration
         loadConfig();
 
-        // 2. Ensure Project Structure Guidelines
+        // 3. Ensure Project Structure Guidelines
         setupDirectories();
 
-        // 3. Begin Infinite Monitoring Loop
+        // 4. Begin Infinite Monitoring Loop
         try {
             startWatchService();
         } catch (IOException | InterruptedException e) {
@@ -57,14 +70,54 @@ public class RateMyCode {
         }
     }
 
+    private static void resolveInstallationPath() {
+        try {
+            // Find where this class is running from
+            java.security.ProtectionDomain pd = RateMyCode.class.getProtectionDomain();
+            java.security.CodeSource cs = pd.getCodeSource();
+            java.net.URL location = cs.getLocation();
+
+            File source = new File(location.toURI());
+
+            if (source.isDirectory()) {
+                // Running from class files (e.g. RateMyCode/src/ or RateMyCode/bin/)
+                // We assume source is either the project root or a subdir of it
+                // Heuristic: look for config.properties in thisdir or parent
+                if (new File(source, "config.properties").exists()) {
+                    installDir = source.getAbsolutePath();
+                } else if (new File(source.getParent(), "config.properties").exists()) {
+                    installDir = source.getParent();
+                } else {
+                    // Fallback: Assume we are in src/ and root is parent
+                    installDir = source.getParent();
+                }
+            } else {
+                // Running from JAR?
+                // The source is the JAR file itself. Parent dir is the install dir.
+                installDir = source.getParent();
+            }
+
+            System.out.println("Install Dir detected as: " + installDir);
+
+        } catch (URISyntaxException e) {
+            e.printStackTrace();
+            installDir = ".";
+        }
+    }
+
     /**
-     * Reads the 'config.properties' file to populate system settings.
-     * RAM-loads values like Mode and Voice Toggle.
-     * Falls back to safe defaults if the file is missing or corrupt.
+     * Reads the 'config.properties' file from the INSTALLATION DIRECTORY.
      */
     private static void loadConfig() {
         Properties prop = new Properties();
-        try (FileInputStream fis = new FileInputStream("config.properties")) {
+        File configFile = new File(installDir, "config.properties");
+
+        if (!configFile.exists()) {
+            // Fallback: Check if config is in current directory (legacy mode)
+            configFile = new File("config.properties");
+        }
+
+        try (FileInputStream fis = new FileInputStream(configFile)) {
             prop.load(fis);
 
             // Read string property, default to PROFESSIONAL if logic fails
@@ -80,29 +133,38 @@ public class RateMyCode {
                 maxComplexity = 3; // Default safety net
             }
 
-            // Critical: Path to Python env
-            pythonPath = prop.getProperty("python_path", "venv/bin/python");
+            // Critical: Path to Python env (resolve relative to install dir)
+            String rawPythonPath = prop.getProperty("python_path", "venv/bin/python");
+            File pyFile = new File(rawPythonPath);
+            if (!pyFile.isAbsolute()) {
+                pythonPath = new File(installDir, rawPythonPath).getAbsolutePath();
+            } else {
+                pythonPath = rawPythonPath;
+            }
+
+            // API Key
+            geminiApiKey = prop.getProperty("gemini_api_key", "");
 
             System.out.println(
                     "Configuration Loaded: Mode=" + mode + ", Voice=" + voiceEnabled + ", Python=" + pythonPath);
 
         } catch (IOException e) {
-            System.err.println("Failed to load config.properties. Using defaults.");
+            System.err.println(
+                    "Failed to load config.properties from " + configFile.getAbsolutePath() + ". Using defaults.");
             // Fallback Defaults
             mode = "PROFESSIONAL";
             voiceEnabled = false;
             maxComplexity = 3;
-            pythonPath = "python";
+            pythonPath = "python"; // Hope it's in PATH
+            geminiApiKey = "";
         }
     }
 
     /**
-     * Ensures critical directories exist on disk before operation begins.
-     * Prevents IOErrors later during runtime to ensure robustness.
+     * Ensures critical logs directory exists in the INSTALLATION DIRECTORY.
      */
     private static void setupDirectories() {
-        createDirectoryIfNotExists(DOCS_DIR);
-        createDirectoryIfNotExists(LOGS_DIR);
+        createDirectoryIfNotExists(new File(installDir, LOGS_DIR).getAbsolutePath());
     }
 
     /**
@@ -114,7 +176,7 @@ public class RateMyCode {
         File dir = new File(dirPath);
         if (!dir.exists()) {
             if (dir.mkdirs()) {
-                System.out.println("Created directory: " + dirPath);
+                // System.out.println("Created directory: " + dirPath); // Quiet logs
             } else {
                 System.err.println("Failed to create directory: " + dirPath);
             }
@@ -129,17 +191,17 @@ public class RateMyCode {
     private static void startWatchService() throws IOException, InterruptedException {
         // Initialize the watchers
         WatchService watchService = FileSystems.getDefault().newWatchService();
-        Path path = Paths.get(DOCS_DIR);
+        Path path = Paths.get(targetDir).toAbsolutePath();
 
         // Sanity check
         if (!Files.exists(path)) {
-            System.err.println("Directory docs/ does not exist!");
+            System.err.println("Target directory does not exist: " + path);
             return;
         }
 
         // Register for specific events: File Creation and Modification
         path.register(watchService, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY);
-        System.out.println("Monitoring: " + path.toAbsolutePath());
+        System.out.println("Monitoring Target: " + path);
 
         // Infinite Loop
         while (true) {
@@ -201,14 +263,18 @@ public class RateMyCode {
      */
     private static void runAnalyzer(String absoluteFilePath) {
         try {
+            // Resolve engine path relative to install dir
+            File engineFile = new File(installDir, ENGINE_PATH);
+
             // Build the command: [python_executable] [script] [file_arg] [mode_arg]
-            // [voice_arg]
+            // [voice_arg] [api_key]
             ProcessBuilder pb = new ProcessBuilder(
                     pythonPath,
-                    ENGINE_PATH,
+                    engineFile.getAbsolutePath(),
                     absoluteFilePath,
                     mode,
-                    String.valueOf(voiceEnabled));
+                    String.valueOf(voiceEnabled),
+                    geminiApiKey);
 
             // Redirect IO: This makes Python print statements appear in this terminal
             pb.inheritIO();

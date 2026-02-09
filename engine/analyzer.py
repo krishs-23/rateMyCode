@@ -6,6 +6,7 @@ This script is the core logic engine for the RateMyCode tool. It performs the fo
 2. Calculates the complexity score based on nested loop depth.
 3. Generates feedback (text and audio) based on the configured 'Persona'.
 4. Persists the results to a local SQLite database for historical tracking.
+5. (Optional) Uses Gemini API for dynamic AI feedback.
 """
 
 import sys
@@ -13,6 +14,7 @@ import ast
 import sqlite3
 import datetime
 import os
+import re
 from typing import Tuple
 
 # Attempt to import third-party libraries.
@@ -25,6 +27,13 @@ try:
 except ImportError:
     print("Error: Required libraries not found. Please install requirements.txt")
     sys.exit(1)
+
+# Import Google GenAI (Soft import to avoid crashing if not used but package missing)
+try:
+    import google.generativeai as genai
+    HAS_GENAI = True
+except ImportError:
+    HAS_GENAI = False
 
 # Initialize Rich Console for styled terminal output
 console = Console()
@@ -129,7 +138,55 @@ def get_feedback(score: int, mode: str) -> Tuple[str, str]:
         
     return verdict, color
 
-def persist_result(filename: str, score: int, mode: str):
+def analyze_with_gemini(api_key: str, code: str, mode: str) -> Tuple[int, str]:
+    """
+    Uses Gemini API to analyze the code.
+    Fallback to AST if API fails.
+    Returns (Score, Verdict).
+    """
+    if not HAS_GENAI:
+        return -1, "Gemini library not found."
+        
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-pro')
+        
+        prompt = f"""
+        You are a code reviewer with the persona: {mode}.
+        Analyze the following Python code for complexity, style, and bad practices.
+        
+        Return the response EXACTLY in this format:
+        Score: <Integer 0-100>
+        Verdict: <One or two sentences of feedback in your persona>
+        
+        Code:
+        {code}
+        """
+        
+        response = model.generate_content(prompt)
+        text = response.text
+        
+        # Parse Score
+        score_match = re.search(r"Score:\s*(\d+)", text)
+        if score_match:
+            score = int(score_match.group(1))
+        else:
+            score = 50 # Default if parse fails
+            
+        # Parse Verdict
+        verdict_match = re.search(r"Verdict:\s*(.*)", text, re.DOTALL)
+        if verdict_match:
+            verdict = verdict_match.group(1).strip()
+        else:
+            verdict = text # Fallback to full text if parse fails
+            
+        return score, verdict
+        
+    except Exception as e:
+        console.print(f"[yellow]Gemini API warning: {e}. Falling back to local logic.[/yellow]")
+        return -1, ""
+
+def persist_result(filename: str, score: int, mode: str, method: str):
     """
     Saves the analysis result into a persistent SQLite database.
     Creates the table 'history' if it doesn't already exist.
@@ -140,7 +197,7 @@ def persist_result(filename: str, score: int, mode: str):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        # Ensure schema exists
+        # Ensure schema exists (Added method column logic manually if needed, but keeping simple for now)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,6 +207,8 @@ def persist_result(filename: str, score: int, mode: str):
                 mode TEXT
             )
         ''')
+        # Note: We aren't storing 'method' in DB yet to avoid schema migration complexity for this task,
+        # but we could add it later.
         
         # Insert record
         cursor.execute("INSERT INTO history (timestamp, filename, score, mode) VALUES (?, ?, ?, ?)",
@@ -180,24 +239,19 @@ def speak_feedback(text: str, voice_enabled: str):
 
 def main():
     """
-    Main Execution Flow:
-    1. Validate Arguments
-    2. Read File
-    3. Analyze Complexity (with visual loading bar)
-    4. Calculate Score
-    5. Save to DB
-    6. Display Results (Table)
-    7. Speak Results (Audio)
+    Main Execution Flow
     """
     
     # 1. Argument Validation
+    # Args: script, filepath, mode, voice_enabled, [api_key]
     if len(sys.argv) < 4:
-        console.print("[red]Usage: python analyzer.py <filepath> <mode> <voice_enabled>[/red]")
+        console.print("[red]Usage: python analyzer.py <filepath> <mode> <voice_enabled> [api_key][/red]")
         sys.exit(1)
 
     filepath = sys.argv[1]
     mode = sys.argv[2]
     voice_enabled = sys.argv[3]
+    api_key = sys.argv[4] if len(sys.argv) > 4 else ""
 
     if not os.path.exists(filepath):
         console.print(f"[red]File not found: {filepath}[/red]")
@@ -207,7 +261,7 @@ def main():
     with open(filepath, 'r') as f:
         code = f.read()
 
-    # 3. Analyze Complexity (with visuals)
+    # 3. Analyze
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
         progress.add_task(description="Analyzing Code...", total=None)
         
@@ -215,36 +269,56 @@ def main():
         import time
         time.sleep(0.5) 
         
-        depth = analyze_complexity(code)
+        # Decide between Local AST or Remote LLM
+        used_gemini = False
+        if api_key and api_key.strip() != "" and "PASTE_YOUR" not in api_key:
+            score, verdict_text = analyze_with_gemini(api_key, code, mode)
+            if score != -1:
+                depth = -1 # Not applicable for LLM
+                used_gemini = True
+            else:
+                # Gemini failed, fallback
+                depth = analyze_complexity(code)
+                score = -1 # Will calculate below
+        else:
+            depth = analyze_complexity(code)
+            score = -1
 
-    # Handle Syntax Errors
-    if depth == -1:
-        console.print(f"[bold red]Syntax Error in {os.path.basename(filepath)}[/bold red]")
-        verdict = "Your code is so broken I can't even analyze it."
-        speak_feedback(verdict, voice_enabled)
-        return
-
-    # 4. Scoring Algorithm
-    # Formula: Start at 100. Deduct 20 points for every level of nesting depth.
-    # Depth 0 (No loops) = 100
-    # Depth 1 (O(n)) = 80
-    # Depth 2 (O(n^2)) = 60
-    # Depth 3 (O(n^3)) = 40 (This is usually considered bad practice)
-    score = max(0, 100 - (depth * 20))
+        # Fallback Calculation
+        if not used_gemini:
+            if depth == -1:
+                # Re-check syntax error if we fell back
+                depth = analyze_complexity(code)
+            
+            if depth == -1:
+                console.print(f"[bold red]Syntax Error in {os.path.basename(filepath)}[/bold red]")
+                verdict = "Your code is so broken I can't even analyze it."
+                speak_feedback(verdict, voice_enabled)
+                return
+            
+            # Local Scoring
+            score = max(0, 100 - (depth * 20))
+            verdict_text, color = get_feedback(score, mode)
+        else:
+            # Color logic for Gemini result
+            if score >= 90: color = "green"
+            elif score >= 70: color = "yellow"
+            else: color = "red"
 
     # 5. Persist Data
-    persist_result(os.path.basename(filepath), score, mode)
+    persist_result(os.path.basename(filepath), score, mode, "Gemini" if used_gemini else "AST")
     
-    # Generate Feedback Text
-    verdict_text, color = get_feedback(score, mode)
-
     # 6. Display Results using Rich Table
     table = Table(title=f"RateMyCode: {os.path.basename(filepath)}")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="magenta")
     table.add_column("Verdict", style=color)
 
-    table.add_row("Complexity (Depth)", str(depth), "High" if depth > 2 else "Acceptable")
+    if used_gemini:
+        table.add_row("Analysis Method", "Gemini AI", "Intelligent")
+    else:
+        table.add_row("Complexity (Depth)", str(depth), "High" if depth > 2 else "Acceptable")
+    
     table.add_row("Quality Score", f"{score}/100", verdict_text)
 
     console.print(table)

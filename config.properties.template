@@ -1,0 +1,5 @@
+mode=SAVAGE
+voice_enabled=true
+max_complexity=3
+python_path=venv/bin/python
+gemini_api_key=PASTE_YOUR_GEMINI_API_KEY_HERE

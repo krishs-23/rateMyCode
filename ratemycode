@@ -1,0 +1,7 @@
+#!/bin/bash
+# Wrapper for rateMyCode
+# Usage: ./ratemycode [target_directory]
+
+INSTALL_DIR="/Users/krish/rateMyCode"
+cd "$INSTALL_DIR" # Java needs to run from root to find internal paths correctly via relative paths fallback
+java -cp src RateMyCode "${1:-.}"
