@@ -6,3 +6,8 @@ rateMyCode_history.db
 .DS_Store
 test.py
 config.properties
+*.egg-info
+.env
+dist/
+build/
+.pytest_cache/

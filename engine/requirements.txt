@@ -1,3 +1,0 @@
-rich
-pyttsx3
-google-generativeai

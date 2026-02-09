@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ratemycode"
+version = "2.0.0"
+description = "A real-time code quality assistant and complexity analyzer."
+authors = [{name = "RateMyCode Team", email = "dev@ratemycode.com"}]
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "watchdog>=3.0.0",
+    "radon>=6.0.0",
+    "google-generativeai>=0.3.0",
+    "rich>=13.0.0",
+    "pyttsx3>=2.90",
+    "appdirs>=1.4.4",
+    "python-dotenv>=1.0.0"
+]
+
+[project.scripts]
+ratemycode = "ratemycode.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
