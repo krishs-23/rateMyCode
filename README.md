@@ -16,6 +16,7 @@ It watches your project directory while you code, and the moment you save a file
 *   **Hybrid Analysis Engine**: 
     *   **Local AST Logic**: Uses Abstract Syntax Trees to calculate nesting depth (O(n), O(n^2), etc.) locally and instantly.
     *   **Gemini AI Integration**: Uses Google's Gemini API for deep, semantic code reviews and custom roasts.
+    *   *Why Gemini?* We chose Gemini over OpenAI or Anthropic because of its **extremely generous free tier** (ideal for hobbyist developers) and **low latency**, ensuring your code roast arrives before you can even switch windows.
 *   **Multiple Personas**:
     *   👹 **SAVAGE**: Ruthlessly mocks bad code. ("My CPU hurts just looking at this.")
     *   👔 **PROFESSIONAL**: Constructive, corporate-style feedback.
