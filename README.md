@@ -12,15 +12,15 @@ It matches your project directory while you code, and the moment you save a file
 
 ## 🚀 Features
 
-*   **Real-Time Monitoring**: Instantly reacts to file saves (`Ctrl+S`).
+*   **Real-Time Monitoring**: Instantly reacts to file saves (`Ctrl+S`) using `watchdog`.
 *   **Hybrid Analysis Engine**:
-    *   **Local Logic**: Uses `radon` to calculate Cyclomatic Complexity locally and instantly.
+    *   **Local Logic**: Uses `radon` (and custom AST traversal) to calculate Cyclomatic Complexity locally and instantly.
     *   **Gemini AI Integration**: Uses Google's Gemini API for deep, semantic code reviews and custom roasts.
 *   **Multiple Personas**:
     *   👹 **SAVAGE**: Ruthlessly mocks bad code. ("My CPU hurts just looking at this.")
     *   👔 **PROFESSIONAL**: Constructive, corporate-style feedback.
     *   🥺 **GENTLE**: Encouraging and kind for beginners.
-*   **Voice Feedback**: Reads the verdict aloud so you can hear your failure (or success).
+*   **Voice Feedback**: Reads the verdict aloud asynchronously so you can hear your failure (or success) without UI freezes.
 *   **Database Tracking**: Logs every analysis to a local SQLite database (`rateMyCode_history.db`) to track your improvement over time.
 *   **Flexible CLI**: Run it from anywhere to monitor any project on your system.
 
@@ -76,23 +76,39 @@ ratemycode /path/to/my/awesome/project
 
 ### Configuration
 Configuration is stored in your user configuration directory (e.g., `~/.config/rateMyCode/config.json` on macOS/Linux).
-You can also control the API key via environment variable:
+The first time you run the tool, it will use defaults. You can create/edit the file to customize:
+
+```json
+{
+    "mode": "SAVAGE",
+    "voice_enabled": true,
+    "max_complexity": 3,
+    "gemini_api_key": "YOUR_KEY_HERE",
+    "supported_extensions": [".py", ".java", ".js", ".cpp", ".ts", ".go", ".rs"]
+}
+```
+
+**Security Note:** You can also control the API key via environment variable:
 ```bash
 export GEMINI_API_KEY="your_api_key_here"
 ```
+> **Warning**: Do not commit a `.env` file containing your API key to a public repository!
 
 ---
 
 ## 🧠 How It Works
 
 ### The Architecture
-The system uses a **Python-only** architecture:
+The system uses a **Production-Ready Python** architecture:
 
 1.  **The Watcher**: Uses `watchdog` to monitor file system events efficiently.
 2.  **The Analyzer**:
-    *   If **Gemini API** is active, it sends the code to the LLM for a full review.
-    *   If **Local Mode** is active, it uses `radon` to calculate Cyclomatic Complexity.
-3.  **The Verdict**: The result is printed to the console using `rich` for pretty tables and spoken aloud using `pyttsx3` asynchronously.
+    *   **Gemini Mode**: Sends code to the LLM for a full review (with JSON enforcement).
+    *   **Local Mode**: Uses `radon` for function complexity + custom AST traversal for script complexity.
+3.  **The Verdict**:
+    *   **Console**: Renders pretty tables using `rich`.
+    *   **Audio**: Uses `multiprocessing` to run TTS safely without crashing the main thread.
+    *   **Database**: Uses a **Producer-Consumer Queue** to ensure SQLite writes are thread-safe.
 
 ### Directory Structure
 ```
