@@ -5,6 +5,7 @@ import threading
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from .analyzer import analyze_file
+from .config import load_config
 from rich.console import Console
 
 console = Console()
@@ -17,7 +18,10 @@ class CodeChangeHandler(FileSystemEventHandler):
     def __init__(self):
         self.last_modified = {}
         self.debounce_interval = 1.0 # Seconds
-        self.supported_extensions = {".py", ".java", ".js", ".cpp", ".ts", ".go", ".rs"}
+        config = load_config()
+        # Load extensions from config, ensuring they have dots
+        exts = config.get("supported_extensions", [".py", ".java", ".js", ".cpp"])
+        self.supported_extensions = set(exts)
 
     def on_modified(self, event):
         if event.is_directory:
@@ -52,6 +56,7 @@ def start_watching(path: str):
     observer.start()
     
     console.print(f"[green]RateMyCode is now watching: {os.path.abspath(path)}[/green]")
+    console.print(f"[dim]Watching extensions: {', '.join(event_handler.supported_extensions)}[/dim]")
     console.print("[dim]Press Ctrl+C to stop.[/dim]")
 
     try:

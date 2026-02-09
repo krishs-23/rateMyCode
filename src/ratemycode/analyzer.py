@@ -169,7 +169,6 @@ def analyze_file(filepath: str):
         if not used_gemini:
             depth = analyze_complexity(code)
             if depth == -1:
-                # console.print(f"[bold red]Syntax Error or Analysis Failed in {os.path.basename(filepath)}[/bold red]")
                 return
             
             # Score = 100 - (CC * 5). Min 0.

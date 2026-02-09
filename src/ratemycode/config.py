@@ -15,7 +15,8 @@ DEFAULT_CONFIG = {
     "mode": "PROFESSIONAL",
     "voice_enabled": False,
     "max_complexity": 3,
-    "gemini_api_key": ""
+    "gemini_api_key": "",
+    "supported_extensions": [".py", ".java", ".js", ".cpp", ".ts", ".go", ".rs"]
 }
 
 def get_config_dir():
