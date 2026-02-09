@@ -1,6 +1,6 @@
 # rateMyCode 🧐🔥
 
-**rateMyCode** is a hilariously savage (or shockingly professional) **Real-Time Code Quality Assistant** that lives in your terminal. 
+**rateMyCode** is a casual and unfiltered (or strictly professional) **Real-Time Code Quality Assistant** that lives in your terminal. 
 
 It watches your project directory while you code, and the moment you save a file, it:
 1.  **Analyzes** the complexity of your code (Big-O loops).
