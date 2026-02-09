@@ -3,10 +3,63 @@ import os
 import sqlite3
 import datetime
 import pyttsx3
-import threading
+import multiprocessing
+import json
+import re
 from rich.console import Console
 
 console = Console()
+
+class DatabaseManager:
+    """
+    Manages SQLite connections to avoid opening/closing on every write.
+    """
+    _instance = None
+    
+    def __new__(cls, db_path):
+        if cls._instance is None:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+            cls._instance.db_path = db_path
+            cls._instance.conn = None
+        return cls._instance
+
+    def connect(self):
+        if self.conn is None:
+            try:
+                os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+                self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                self._init_db()
+            except Exception as e:
+                console.print(f"[red]DB Connection Error: {e}[/red]")
+
+    def _init_db(self):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                filename TEXT,
+                score INTEGER,
+                mode TEXT,
+                method TEXT
+            )
+        ''')
+        self.conn.commit()
+
+    def insert(self, filename, score, mode, method):
+        try:
+            self.connect()
+            cursor = self.conn.cursor()
+            cursor.execute("INSERT INTO history (timestamp, filename, score, mode, method) VALUES (?, ?, ?, ?, ?)",
+                        (datetime.datetime.now().isoformat(), filename, score, mode, method))
+            self.conn.commit()
+        except Exception as e:
+            console.print(f"[red]DB Write Error: {e}[/red]")
+
+    def close(self):
+        if self.conn:
+            self.conn.close()
+            self.conn = None
 
 def get_feedback(score: int, mode: str) -> tuple[str, str]:
     """
@@ -46,45 +99,29 @@ def persist_result(db_path: str, filename: str, score: int, mode: str, method: s
     """
     Saves the analysis result into a persistent SQLite database.
     """
+    db = DatabaseManager(db_path)
+    db.insert(filename, score, mode, method)
+
+def _speak_process(text: str):
+    """
+    Target function for valid multiprocessing.
+    """
     try:
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT,
-                filename TEXT,
-                score INTEGER,
-                mode TEXT,
-                method TEXT
-            )
-        ''')
-        
-        cursor.execute("INSERT INTO history (timestamp, filename, score, mode, method) VALUES (?, ?, ?, ?, ?)",
-                       (datetime.datetime.now().isoformat(), filename, score, mode, method))
-        conn.commit()
-    except Exception as e:
-        console.print(f"[red]Database Error: {e}[/red]")
-    finally:
-        if 'conn' in locals():
-            conn.close()
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 170)
+        engine.say(text)
+        engine.runAndWait()
+    except Exception:
+        pass
 
 def speak_feedback_async(text: str, voice_enabled: bool):
     """
-    Uses Text-to-Speech (TTS) to read the feedback aloud in a separate thread.
+    Uses Text-to-Speech (TTS) to read the feedback aloud in a separate PROCESS.
+    This avoids segfaults on macOS/Linux caused by threading UI libraries.
     """
     if not voice_enabled:
         return
 
-    def _speak():
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', 170)
-            engine.say(text)
-            engine.runAndWait()
-        except Exception:
-            pass
-
-    threading.Thread(target=_speak, daemon=True).start()
+    # Fire and forget process
+    p = multiprocessing.Process(target=_speak_process, args=(text,))
+    p.start()

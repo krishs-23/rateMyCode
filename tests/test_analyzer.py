@@ -20,24 +20,33 @@ def nested():
         if i % 2 == 0:
             print(i)
 """
-        # Complexity is 3 (1 for func + 1 for loop + 1 for if) => wait, radon might be different.
-        # Let's check radon logic. CC is usually 1 + branching points.
-        # func: +1
-        # for: +1
-        # if: +1
-        # Total: 3.
+        # func: +1, for: +1, if: +1. Total: 3.
         self.assertEqual(analyze_complexity(code), 3)
+        
+    def test_complexity_script_toplevel(self):
+        """
+        Test that top-level script logic (no functions) is caught.
+        """
+        code = """
+x = 0
+for i in range(10): # +1
+    if i % 2 == 0: # +1
+        print(i)
+    while x < 5: # +1
+        x += 1
+"""
+        # Base 1 + 3 control flows = 4
+        self.assertEqual(analyze_complexity(code), 4)
 
     @patch('ratemycode.analyzer.genai')
-    def test_gemini_mock(self, mock_genai):
-        # Mocking the response
+    def test_gemini_mock_json_extraction(self, mock_genai):
         mock_model = MagicMock()
         mock_response = MagicMock()
-        mock_response.text = '{"score": 85, "verdict": "Good code."}'
+        # Simulate response with markdown blocks
+        mock_response.text = 'Here is the JSON: ```json\n{"score": 85, "verdict": "Good code."}\n```'
         mock_model.generate_content.return_value = mock_response
         mock_genai.GenerativeModel.return_value = mock_model
         
-        # Test
         score, verdict = analyze_with_gemini("fake_key", "print('hello')", "PROFESSIONAL")
         
         self.assertEqual(score, 85)

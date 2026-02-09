@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "🔍 Verifying rateMyCode Installation..."
+echo "🔍 Verifying rateMyCode Installation (v2.0 - Audit Fixes applied)..."
 
 # 1. Create venv if not exists
 if [ ! -d "venv" ]; then

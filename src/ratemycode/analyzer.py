@@ -3,6 +3,7 @@ import os
 import sys
 import re
 import ast
+import json
 from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -19,21 +20,66 @@ from .config import load_config, get_data_dir
 
 console = Console()
 
+class ScriptComplexityVisitor(ast.NodeVisitor):
+    """
+    Calculates complexity for top-level scripts that lack functions.
+    Counts control flow statements.
+    """
+    def __init__(self):
+        self.complexity = 1 # Base complexity
+        
+    def visit_If(self, node):
+        self.complexity += 1
+        self.generic_visit(node)
+        
+    def visit_For(self, node):
+        self.complexity += 1
+        self.generic_visit(node)
+        
+    def visit_While(self, node):
+        self.complexity += 1
+        self.generic_visit(node)
+        
+    def visit_Try(self, node):
+        self.complexity += 1
+        self.generic_visit(node)
+        
+    # We do NOT visit FunctionDef or ClassDef here because Radon handles those.
+    # We only care about the global scope "spaghetti".
+
 def analyze_complexity(code: str) -> int:
     """
-    Calculates Cyclomatic Complexity using Radon.
-    Returns the maximum complexity found in the code blocks.
+    Calculates Cyclomatic Complexity using Radon (for functions/classes)
+    AND custom AST traversal for top-level script logic.
+    Returns the MAXIMUM complexity found (either a specific function or the script body).
     """
+    max_complexity = 1
+    
     try:
-        # cc_visit returns a list of blocks (functions/classes) with their complexity
+        # 1. Check Function/Class Complexity with Radon
         blocks = radon_cc.cc_visit(code)
-        if not blocks:
-            # If no blocks (script only), allow it but maybe warn? 
-            # For scripts, we can just return 1 as base complexity.
-            return 1
+        if blocks:
+            max_complexity = max(block.complexity for block in blocks)
+            
+        # 2. Check Top-Level Script Complexity manually
+        # This catches "spaghetti scripts" without functions
+        tree = ast.parse(code)
         
-        # Return the maximum complexity found
-        return max(block.complexity for block in blocks)
+        # We want to count complexity ONLY of top-level nodes, not double-count inside functions
+        # So we iterate top-level nodes and only visit control flow ones
+        script_visitor = ScriptComplexityVisitor()
+        
+        for node in tree.body:
+             if isinstance(node, (ast.If, ast.For, ast.While, ast.Try)):
+                 script_visitor.visit(node)
+        
+        script_complexity = script_visitor.complexity
+        
+        # logical max: is the script itself messier than its functions?
+        return max(max_complexity, script_complexity)
+        
+    except SyntaxError:
+        return -1
     except Exception as e:
         console.print(f"[red]Error analyzing code complexity: {e}[/red]")
         return -1
@@ -49,13 +95,18 @@ def analyze_with_gemini(api_key: str, code: str, mode: str) -> tuple[int, str]:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('gemini-pro')
         
-        system_instruction = f"You are a code reviewer with the persona: {mode}. Analyze the code for complexity, style, and bad practices."
-        
         prompt = f"""
-        Analyze the following Python code.
+        You are a code reviewer with the persona: {mode}.
+        Analyze the following Python code for complexity, style, and bad practices.
         
-        Return the response AS A RAW JSON OBJECT with no markdown formatting.
-        The JSON object must have keys: "score" (integer 0-100) and "verdict" (string).
+        You must verify if the code is safe and follows best practices.
+        
+        Return the response AS A RAW JSON OBJECT. Do not use Markdown blocks.
+        Format:
+        {{
+            "score": <Integer 0-100>,
+            "verdict": "<One or two sentences of feedback>"
+        }}
 
         Code:
         {code}
@@ -64,13 +115,15 @@ def analyze_with_gemini(api_key: str, code: str, mode: str) -> tuple[int, str]:
         response = model.generate_content(prompt)
         text = response.text
         
-        # Clean up potential markdown code blocks if the model ignores instruction
-        text = text.replace("```json", "").replace("```", "").strip()
-        
-        import json
-        data = json.loads(text)
-        
-        return data.get("score", 50), data.get("verdict", "No verdict provided.")
+        # Robust Parsing: Extract JSON structure using Regex
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            clean_json = json_match.group(0)
+            data = json.loads(clean_json)
+            return data.get("score", 50), data.get("verdict", "No verdict provided.")
+        else:
+            # Fallback if no JSON found
+            return -1, "AI Response Malformed"
         
     except Exception as e:
         console.print(f"[yellow]Gemini API warning: {e}. Falling back to local logic.[/yellow]")
@@ -89,13 +142,20 @@ def analyze_file(filepath: str):
         console.print(f"[red]File not found: {filepath}[/red]")
         return
 
-    with open(filepath, 'r') as f:
-        code = f.read()
+    try:
+        with open(filepath, 'r') as f:
+            code = f.read()
+    except Exception as e:
+        console.print(f"[red]Error reading file: {e}[/red]")
+        return
+
+    # Basic ignore
+    if not code.strip():
+        return
 
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), transient=True) as progress:
         progress.add_task(description="Analyzing Code...", total=None)
         
-        # Determine method
         used_gemini = False
         score = -1
         depth = -1
@@ -107,20 +167,15 @@ def analyze_file(filepath: str):
                 used_gemini = True
 
         if not used_gemini:
-             # Fallback to Radon
             depth = analyze_complexity(code)
             if depth == -1:
-                 # Syntax Error probably
-                 console.print(f"[bold red]Syntax Error or Analysis Failed in {os.path.basename(filepath)}[/bold red]")
-                 return
+                # console.print(f"[bold red]Syntax Error or Analysis Failed in {os.path.basename(filepath)}[/bold red]")
+                return
             
-            # Simple scoring based on complexity
-            # CC > 10 is generally considered bad.
             # Score = 100 - (CC * 5). Min 0.
             score = max(0, 100 - (depth * 5))
             verdict_text, color = get_feedback(score, mode)
         else:
-             # Just get color for the verdict
              _, color = get_feedback(score, mode)
 
     # Persist
